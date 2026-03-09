@@ -2,6 +2,20 @@
 
 Frontend visualization tests, recipes, and component gallery for Pipecat RTVI.
 
+## RTVIPipelineProgressBar (Mic, STT, LLM, TTS, Speaker)
+
+![RTVIPipelineProgressBar](RTVIPipelineProgressBar.gif)
+
+Self-contained React component that visualizes the Pipecat RTVI pipeline
+as a chain of colored blocks. Each block lights up and scales when data
+flows through that stage.
+
+Subscribes to RTVI events internally via usePipecatClient(), no props
+needed. Requires a PipecatAppBase ancestor (or any provider that exposes
+an RTVIClient via the pipecat-ai React context).
+
+## Todo
+
 Pipecat's RTVI frontend stack is rich: 4 visualizers, 13 event channels, multi-layer state management. This repo brings it all together with tests, practical tutorials, and a visual showcase.
 
 ## Planned
