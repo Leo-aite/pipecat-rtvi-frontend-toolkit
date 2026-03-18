@@ -10,7 +10,12 @@ const stages = [
   { key: 'speaker', label: 'Speaker', color: '#8b5cf6' },
 ];
 
-const RTVIPipelineProgressBar: React.FC = () => {
+interface RTVIPipelineProgressBarProps {
+  /** Show latency duration (ms) above each stage. Default: false */
+  showLatency?: boolean;
+}
+
+const RTVIPipelineProgressBar: React.FC<RTVIPipelineProgressBarProps> = ({ showLatency = false }) => {
   const client = usePipecatClient();
   const transportState = client?.state ?? 'disconnected';
   const connected = transportState === 'ready';
@@ -19,29 +24,49 @@ const RTVIPipelineProgressBar: React.FC = () => {
     mic: false, stt: false, llm: false, tts: false, speaker: false,
   });
 
+  // Latency: track when each stage activated, show duration after deactivation
+  const stageStartRef = useRef<Record<string, number>>({
+    mic: 0, stt: 0, llm: 0, tts: 0, speaker: 0,
+  });
+  const [latencies, setLatencies] = useState<Record<string, number | null>>({
+    mic: null, stt: null, llm: null, tts: null, speaker: null,
+  });
+
   const sttTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
   const ttsTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
   const llmFallbackRef = useRef<ReturnType<typeof setTimeout>>();
   const botJustStoppedRef = useRef(false);
 
+  const activate = (key: string) => {
+    stageStartRef.current[key] = performance.now();
+    setActivity(prev => prev[key] ? prev : { ...prev, [key]: true });
+  };
+
+  const deactivate = (key: string) => {
+    const start = stageStartRef.current[key];
+    if (start > 0) {
+      setLatencies(prev => ({ ...prev, [key]: Math.round(performance.now() - start) }));
+    }
+    setActivity(prev => !prev[key] ? prev : { ...prev, [key]: false });
+  };
+
   // Reset on connect/disconnect
   useEffect(() => {
     setActivity({ mic: false, stt: false, llm: false, tts: false, speaker: false });
+    setLatencies({ mic: null, stt: null, llm: null, tts: null, speaker: null });
   }, [transportState]);
 
   // Subscribe to RTVI events
   useEffect(() => {
     if (!client) return;
 
-    const onUserStartedSpeaking = () => {
-      setActivity(prev => ({ ...prev, mic: true }));
-    };
+    const onUserStartedSpeaking = () => activate('mic');
 
     const onUserStoppedSpeaking = () => {
-      setActivity(prev => ({ ...prev, mic: false }));
+      deactivate('mic');
       llmFallbackRef.current = setTimeout(() => {
         setActivity(prev => {
-          if (!prev.llm && !prev.speaker) return { ...prev, llm: true };
+          if (!prev.llm && !prev.speaker) { activate('llm'); return { ...prev, llm: true }; }
           return prev;
         });
       }, 300);
@@ -49,44 +74,32 @@ const RTVIPipelineProgressBar: React.FC = () => {
 
     const onUserTranscript = () => {
       if (botJustStoppedRef.current) return;
-      setActivity(prev => prev.stt ? prev : { ...prev, stt: true });
+      activate('stt');
       clearTimeout(sttTimeoutRef.current);
-      sttTimeoutRef.current = setTimeout(() => {
-        setActivity(prev => !prev.stt ? prev : { ...prev, stt: false });
-      }, 400);
+      sttTimeoutRef.current = setTimeout(() => deactivate('stt'), 400);
     };
 
     const onBotLlmStarted = () => {
       clearTimeout(llmFallbackRef.current);
-      setActivity(prev => ({ ...prev, llm: true }));
+      activate('llm');
     };
 
-    const onBotLlmStopped = () => {
-      setActivity(prev => ({ ...prev, llm: false }));
-    };
+    const onBotLlmStopped = () => deactivate('llm');
 
     const onBotTtsText = () => {
-      setActivity(prev => ({ ...prev, tts: true }));
+      activate('tts');
       clearTimeout(ttsTimeoutRef.current);
-      ttsTimeoutRef.current = setTimeout(() => {
-        setActivity(prev => !prev.tts ? prev : { ...prev, tts: false });
-      }, 1000);
+      ttsTimeoutRef.current = setTimeout(() => deactivate('tts'), 1000);
     };
 
-    const onBotTtsStarted = () => {
-      setActivity(prev => ({ ...prev, tts: true }));
-    };
-
-    const onBotTtsStopped = () => {
-      setActivity(prev => ({ ...prev, tts: false }));
-    };
-
-    const onBotStartedSpeaking = () => {
-      setActivity(prev => ({ ...prev, speaker: true }));
-    };
+    const onBotTtsStarted = () => activate('tts');
+    const onBotTtsStopped = () => deactivate('tts');
+    const onBotStartedSpeaking = () => activate('speaker');
 
     const onBotStoppedSpeaking = () => {
-      setActivity(prev => ({ ...prev, speaker: false, tts: false, llm: false }));
+      deactivate('speaker');
+      deactivate('tts');
+      deactivate('llm');
       botJustStoppedRef.current = true;
       setTimeout(() => { botJustStoppedRef.current = false; }, 500);
     };
@@ -125,6 +138,7 @@ const RTVIPipelineProgressBar: React.FC = () => {
         <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wider mr-2">Pipeline</span>
         {stages.map((stage, i) => {
           const isActive = connected && activity[stage.key];
+          const lat = latencies[stage.key];
           return (
             <React.Fragment key={stage.key}>
               {i > 0 && (
@@ -145,19 +159,33 @@ const RTVIPipelineProgressBar: React.FC = () => {
                   />
                 </svg>
               )}
-              <div
-                className="px-2.5 py-1 rounded-md text-[11px] font-semibold text-center min-w-[48px] border transition-all duration-200 ease-out"
-                style={{
-                  backgroundColor: isActive ? stage.color + '18' : '#f9fafb',
-                  borderColor: isActive ? stage.color : '#e5e7eb',
-                  color: isActive ? stage.color : '#9ca3af',
-                  transform: isActive ? 'scale(1.15)' : 'scale(1)',
-                  boxShadow: isActive
-                    ? `0 0 14px ${stage.color}40, 0 2px 6px ${stage.color}25`
-                    : 'none',
-                }}
-              >
-                {stage.label}
+              <div className="flex flex-col items-center">
+                {showLatency && (
+                  <span
+                    className="text-[9px] font-mono font-bold mb-0.5 transition-opacity duration-300"
+                    style={{
+                      color: stage.color,
+                      opacity: lat !== null ? 1 : 0,
+                      minHeight: 12,
+                    }}
+                  >
+                    {lat !== null ? `${lat}ms` : ''}
+                  </span>
+                )}
+                <div
+                  className="px-2.5 py-1 rounded-md text-[11px] font-semibold text-center min-w-[48px] border transition-all duration-200 ease-out"
+                  style={{
+                    backgroundColor: isActive ? stage.color + '18' : '#f9fafb',
+                    borderColor: isActive ? stage.color : '#e5e7eb',
+                    color: isActive ? stage.color : '#9ca3af',
+                    transform: isActive ? 'scale(1.15)' : 'scale(1)',
+                    boxShadow: isActive
+                      ? `0 0 14px ${stage.color}40, 0 2px 6px ${stage.color}25`
+                      : 'none',
+                  }}
+                >
+                  {stage.label}
+                </div>
               </div>
             </React.Fragment>
           );
